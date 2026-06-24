@@ -33,17 +33,18 @@ def send_line(msg):
 # SPY 數據
 # =========================
 def get_spy_data():
-    df = yf.download("SPY", period="2y", interval="1d")
+   df = yf.download("SPY", period="2y", interval="1d")
 
    close = df["Close"].iloc[-1]
    close = close.item() if hasattr(close, "item") else float(close)
+    
    ma_series = df["Close"].rolling(200).mean()
    ma200 = ma_series.iloc[-1]
    ma200 = ma200.item() if hasattr(ma200, "item") else float(ma200)
 
    dev = (close / ma200 - 1) * 100
 
-    return close, ma200, dev
+   return close, ma200, dev
 
 # =========================
 # 主程式
