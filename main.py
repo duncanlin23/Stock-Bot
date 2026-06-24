@@ -28,6 +28,8 @@ def send_line(msg):
     }
 
     requests.post(url, headers=headers, json=data)
+    print("STATUS:", response.status_code)
+    print("BODY:", response.text)
 
 # =========================
 # SPY 數據
