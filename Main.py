@@ -8,7 +8,7 @@ import os
 # =========================
 def send_line(msg):
     token = os.environ["LINE_TOKEN"]
-    user_id = os.environ["USER_ID"]
+    user_id1 = os.environ["USER_ID1"]
 
     url = "https://api.line.me/v2/bot/message/push"
 
@@ -18,7 +18,7 @@ def send_line(msg):
     }
 
     data = {
-        "to": user_id,
+        "to": user_id1,
         "messages": [
             {
                 "type": "text",
