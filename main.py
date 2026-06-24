@@ -30,6 +30,7 @@ def send_line(msg):
     response = requests.post(url, headers=headers, json=data)
     print("STATUS:", response.status_code)
     print("BODY:", response.text)
+    print("USER_ID:", repr(user_id1))
 
 # =========================
 # SPY 數據
@@ -63,4 +64,4 @@ if __name__ == "__main__":
 """
 
     send_line(msg)
-    print("USER_ID:", repr(user_id1))
+    
