@@ -37,6 +37,7 @@ def get_spy_data():
 
     close = df["Close"].iloc[-1]
     ma200 = df["Close"].rolling(200).mean().iloc[-1]
+    ma200 = float(ma200)
     dev = (close / ma200 - 1) * 100
 
     return close, ma200, dev
