@@ -2,7 +2,7 @@ name: stock-bot
 
 on:
   schedule:
-    - cron: "0 23 * * *"
+    - cron: "0 23 * * *"  # 台灣早上7點
   workflow_dispatch:
 
 jobs:
@@ -10,16 +10,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      - name: Run script
-        run: python main.py
+      - run: python main.py
+        env:
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+          USER_ID1: ${{ secrets.USER_ID }}
