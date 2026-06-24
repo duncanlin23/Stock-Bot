@@ -63,3 +63,4 @@ if __name__ == "__main__":
 """
 
     send_line(msg)
+    print("USER_ID:", repr(user_id1))
