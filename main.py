@@ -55,6 +55,9 @@ def get_spy_data():
 def get_0050tw_data():
    df = yf.download("0050.TW", period="2y", interval="1d")
 
+   if df.empty:
+       raise ValueError("0050 沒抓到資料（Yahoo API 回空）")
+
    close = df["Close"].iloc[-1]
    close = close.item() if hasattr(close, "item") else float(close)
     
