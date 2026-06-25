@@ -50,10 +50,28 @@ def get_spy_data():
    return close, ma200, dev
 
 # =========================
+# 0050.tw 數據
+# =========================
+def get_0050tw_data():
+   df = yf.download("0050.TW", period="2y", interval="1d")
+
+   close = df["Close"].iloc[-1]
+   close = close.item() if hasattr(close, "item") else float(close)
+    
+   ma_series = df["Close"].rolling(200).mean()
+   ma200 = ma_series.iloc[-1]
+   ma200 = ma200.item() if hasattr(ma200, "item") else float(ma200)
+
+   dev = (close / ma200 - 1) * 100
+
+   return close, ma200, dev
+
+# =========================
 # 主程式
 # =========================
 if __name__ == "__main__":
     close, ma200, dev = get_spy_data()
+    close_0050, ma200_0050, dev_0050 = get_0050tw_data()
 
     msg = f"""
 📊 SPY 技術數據
@@ -61,6 +79,12 @@ if __name__ == "__main__":
 收盤價：{close:.2f}
 200MA：{ma200:.2f}
 偏離率：{dev:.2f}%
+
+📊 0050.TW 技術數據
+
+收盤價：{close_0050:.2f}
+200MA：{ma200_0050:.2f}
+偏離率：{dev_0050:.2f}%
 """
 
     send_line(msg)
