@@ -58,7 +58,7 @@ def get_0050tw_data():
    if df.empty:
        raise ValueError("0050 沒抓到資料（Yahoo API 回空）")
 
-   close = df["Close"].iloc[-1]
+   close = df["Close"].dropna().iloc[-1]
    close = close.item() if hasattr(close, "item") else float(close)
     
    ma_series = df["Close"].rolling(200).mean()
