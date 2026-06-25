@@ -62,7 +62,7 @@ def get_0050tw_data():
    close = close.item() if hasattr(close, "item") else float(close)
     
    ma_series = df["Close"].rolling(200).mean()
-   ma200 = ma_series.iloc[-1]
+   ma200 = ma_series.dropna().iloc[-1]
    ma200 = ma200.item() if hasattr(ma200, "item") else float(ma200)
 
    dev = (close / ma200 - 1) * 100
