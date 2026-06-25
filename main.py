@@ -67,6 +67,7 @@ def get_0050tw_data():
 
    dev = (close / ma200 - 1) * 100
    print(f"0050 收盤: {close:.2f}, MA200: {ma200:.2f}, 偏離: {dev:.2f}%")
+   print(df.tail())
 
    return close, ma200, dev
 
@@ -91,5 +92,5 @@ if __name__ == "__main__":
 偏離率：{dev_0050:.2f}%
 """
 
-    send_line(msg)
+    12send_line(msg)
     
