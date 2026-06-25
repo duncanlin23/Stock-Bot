@@ -2,7 +2,7 @@ name: stock-bot
 
 on:
   schedule:
-    - cron: "*/15 * * * *"  # 台灣早上7點
+    - cron: "*/5 * * * *"  # 台灣早上7點
   workflow_dispatch:
 
 jobs:
