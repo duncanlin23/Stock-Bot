@@ -92,5 +92,5 @@ if __name__ == "__main__":
 偏離率：{dev_0050:.2f}%
 """
 
-    12send_line(msg)
+    #send_line(msg)
     
