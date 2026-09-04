@@ -4,7 +4,6 @@ import numpy as np
 import requests
 import os
 import time
-import sys
 
 # 如果有設定環境變數 YF_DEBUG=1，就開啟 yfinance debug log，方便排查429限流/cookie驗證等問題
 if os.environ.get("YF_DEBUG") == "1":
@@ -38,27 +37,9 @@ def send_line(msg):
 # =========================
 # 共用：帶重試機制的下載 + 驗證
 # =========================
-def fetch_from_stooq(ticker):
+def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=5, wait_sec=10):
     """
-    備援資料源：Stooq，免 API key，Yahoo 失敗時的救援方案。
-    Stooq 的美股代碼直接用 ticker（如 SPY），台股需要用 .tw 後綴（Stooq 格式跟 Yahoo 不同）。
-    """
-    stooq_symbol = ticker.replace(".TW", ".TW") if ".TW" in ticker else ticker
-    url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
-    from io import StringIO
-    df = pd.read_csv(StringIO(resp.text))
-    if df.empty or "Close" not in df.columns:
-        raise ValueError(f"{ticker} 從 Stooq 抓取失敗或格式不對")
-    df["Date"] = pd.to_datetime(df["Date"])
-    df = df.set_index("Date")
-    return df
-
-
-def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=3, wait_sec=5, use_stooq_fallback=True):
-    """
-    下載資料，並驗證資料有效性（非空、Close 非全 NaN、最後一筆非 NaN）。
+    下載資料，並驗證資料有效性（非空、Close 非全 NaN）。
     抓不到有效資料時會重試，重試完仍失敗則 raise。
     """
     last_error = None
@@ -79,7 +60,6 @@ def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=3, wait_sec
             if df is None or df.empty:
                 raise ValueError(f"{ticker} 回傳空 DataFrame（第 {attempt} 次）")
 
-            # 去掉 Close 是 NaN 的尾端資料列，取最後一筆「有效」收盤價
             close_series = df["Close"].dropna()
             if close_series.empty:
                 raise ValueError(f"{ticker} 的 Close 欄位全部是 NaN（第 {attempt} 次）")
@@ -92,15 +72,7 @@ def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=3, wait_sec
             if attempt < max_retries:
                 time.sleep(wait_sec)
 
-    if use_stooq_fallback:
-        try:
-            print(f"[INFO] {ticker} Yahoo 重試 {max_retries} 次仍失敗，改用 Stooq 備援資料源")
-            return fetch_from_stooq(ticker)
-        except Exception as e:
-            print(f"[WARN] {ticker} Stooq 備援也失敗: {e}")
-            last_error = e
-
-    raise RuntimeError(f"{ticker} 重試 {max_retries} 次後仍失敗（含 Stooq 備援）: {last_error}")
+    raise RuntimeError(f"{ticker} 重試 {max_retries} 次後仍失敗: {last_error}")
 
 
 def keep_only_completed_days(df, market_tz):
@@ -117,16 +89,18 @@ def keep_only_completed_days(df, market_tz):
         idx_market = idx.tz_convert(market_tz)
 
     mask = idx_market.normalize() < today_market
-    filtered = df[mask]
-    return filtered
+    return df[mask]
 
 
 def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_days=1):
-    # 先濾掉「今天」這筆盤中/未定案資料，確保拿到的是已收盤的最後交易日
+    """
+    回傳: close, ma200, dev, last_date, is_stale
+    is_stale=True 代表資料距今超過 max_stale_days 個交易日，可能不是最新收盤價，
+    但仍然會照算、照回傳，不會擋掉——由呼叫端決定要不要在訊息裡標註警告。
+    """
     recent_completed = keep_only_completed_days(recent_df, market_tz)
     hist_completed = keep_only_completed_days(hist_df, market_tz)
 
-    # 最新收盤價：用「小範圍查詢」拿到的資料，比較不受大範圍歷史查詢的長效快取影響
     recent_close = recent_completed["Close"].dropna()
     if recent_close.empty:
         raise ValueError(f"{ticker_name} 沒有有效的『已收盤』最新價（可能還在盤中，或還沒有已完成的交易日資料）")
@@ -138,26 +112,10 @@ def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_d
     # 用「工作日天數」判斷新舊，避免週末造成誤判（例如週一抓到上週五資料，這其實是正常最新的）
     today_naive = pd.Timestamp.now(tz=last_date.tzinfo).normalize()
     last_date_naive = pd.Timestamp(last_date).normalize()
-    business_days_old = int(np.busday_count(
-        last_date_naive.date(), today_naive.date()
-    ))
-    if business_days_old > max_stale_days:
-        raise ValueError(
-            f"{ticker_name} 資料過舊：最後一筆日期是 {last_date.date()}，"
-            f"距今 {business_days_old} 個交易日，疑似抓到舊快取資料"
-        )
-    close = float(recent_close.iloc[-1])
+    business_days_old = int(np.busday_count(last_date_naive.date(), today_naive.date()))
+    is_stale = business_days_old > max_stale_days
 
-    # 交叉比對：大範圍歷史資料裡「相同日期」的收盤價，如果跟小範圍查詢差異過大，直接報錯
-    hist_close_series = hist_completed["Close"].dropna()
-    if not hist_close_series.empty:
-        hist_last_date = hist_close_series.index[-1]
-        hist_close = float(hist_close_series.iloc[-1])
-        if abs(hist_close - close) / close > 0.02:  # 差超過 2% 視為異常
-            raise ValueError(
-                f"{ticker_name} 資料源不一致：近期查詢收盤價 {close:.2f}，"
-                f"歷史查詢收盤價 {hist_close:.2f}（{hist_last_date.date()}），差距過大，疑似快取問題"
-            )
+    close = float(recent_close.iloc[-1])
 
     # 200MA 用大範圍歷史資料算（已濾掉未收盤的今天），200 天前的資料稍舊不影響
     ma_series = hist_completed["Close"].rolling(200).mean().dropna()
@@ -169,7 +127,7 @@ def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_d
         raise ValueError(f"{ticker_name} MA200 為 0，無法計算偏離率")
 
     dev = (close / ma200 - 1) * 100
-    return close, ma200, dev, last_date.date()
+    return close, ma200, dev, last_date.date(), is_stale
 
 
 # =========================
@@ -178,14 +136,7 @@ def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_d
 def get_spy_data():
     hist_df = fetch_with_retry("SPY", period="2y")
     recent_df = fetch_with_retry("SPY", period="5d")
-    try:
-        return compute_close_ma_dev(hist_df, recent_df, "SPY", market_tz="America/New_York")
-    except ValueError as e:
-        if "資料過舊" not in str(e):
-            raise
-        print(f"[INFO] SPY Yahoo 資料過舊，改用 Stooq 備援重新計算: {e}")
-        stooq_df = fetch_from_stooq("SPY")
-        return compute_close_ma_dev(stooq_df, stooq_df, "SPY", market_tz="America/New_York")
+    return compute_close_ma_dev(hist_df, recent_df, "SPY", market_tz="America/New_York")
 
 
 # =========================
@@ -194,14 +145,15 @@ def get_spy_data():
 def get_0050tw_data():
     hist_df = fetch_with_retry("0050.TW", period="2y")
     recent_df = fetch_with_retry("0050.TW", period="5d")
-    try:
-        return compute_close_ma_dev(hist_df, recent_df, "0050.TW", market_tz="Asia/Taipei")
-    except ValueError as e:
-        if "資料過舊" not in str(e):
-            raise
-        print(f"[INFO] 0050.TW Yahoo 資料過舊，改用 Stooq 備援重新計算: {e}")
-        stooq_df = fetch_from_stooq("0050.TW")
-        return compute_close_ma_dev(stooq_df, stooq_df, "0050.TW", market_tz="Asia/Taipei")
+    return compute_close_ma_dev(hist_df, recent_df, "0050.TW", market_tz="Asia/Taipei")
+
+
+def format_block(title, close, ma200, dev, data_date, is_stale):
+    warning = "\n⚠️ 非最新收盤價（Yahoo 資料尚未更新，僅供參考）" if is_stale else ""
+    return f"""📊 {title}（資料日期：{data_date}）{warning}
+收盤價：{close:.2f}
+200MA：{ma200:.2f}
+偏離率：{dev:.2f}%"""
 
 
 # =========================
@@ -209,21 +161,15 @@ def get_0050tw_data():
 # =========================
 if __name__ == "__main__":
     try:
-        close, ma200, dev, data_date = get_spy_data()
-        spy_block = f"""📊 SPY 技術數據（資料日期：{data_date}）
-收盤價：{close:.2f}
-200MA：{ma200:.2f}
-偏離率：{dev:.2f}%"""
+        close, ma200, dev, data_date, is_stale = get_spy_data()
+        spy_block = format_block("SPY 技術數據", close, ma200, dev, data_date, is_stale)
     except Exception as e:
         print(f"[ERROR] SPY 抓取失敗: {e}")
         spy_block = f"📊 SPY 技術數據\n⚠️ 資料抓取失敗，已跳過（原因：{e}）"
 
     try:
-        close_0050, ma200_0050, dev_0050, data_date_0050 = get_0050tw_data()
-        e0050_block = f"""📊 0050.TW 技術數據（資料日期：{data_date_0050}）
-收盤價：{close_0050:.2f}
-200MA：{ma200_0050:.2f}
-偏離率：{dev_0050:.2f}%"""
+        close_0050, ma200_0050, dev_0050, data_date_0050, is_stale_0050 = get_0050tw_data()
+        e0050_block = format_block("0050.TW 技術數據", close_0050, ma200_0050, dev_0050, data_date_0050, is_stale_0050)
     except Exception as e:
         print(f"[ERROR] 0050.TW 抓取失敗: {e}")
         e0050_block = f"📊 0050.TW 技術數據\n⚠️ 資料抓取失敗，已跳過（原因：{e}）"
