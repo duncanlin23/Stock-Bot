@@ -71,11 +71,33 @@ def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=3, wait_sec
     raise RuntimeError(f"{ticker} 重試 {max_retries} 次後仍失敗: {last_error}")
 
 
-def compute_close_ma_dev(hist_df, recent_df, ticker_name, max_stale_days=4):
+def keep_only_completed_days(df, market_tz):
+    """
+    過濾掉「今天」這筆資料（如果市場還在盤中或當天資料尚未定案），
+    只保留已經確定收盤的交易日，避免抓到即時跳動的盤中價格。
+    """
+    idx = df.index
+    today_market = pd.Timestamp.now(tz=market_tz).normalize()
+
+    if idx.tz is None:
+        idx_market = idx.tz_localize(market_tz)
+    else:
+        idx_market = idx.tz_convert(market_tz)
+
+    mask = idx_market.normalize() < today_market
+    filtered = df[mask]
+    return filtered
+
+
+def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_days=5):
+    # 先濾掉「今天」這筆盤中/未定案資料，確保拿到的是已收盤的最後交易日
+    recent_completed = keep_only_completed_days(recent_df, market_tz)
+    hist_completed = keep_only_completed_days(hist_df, market_tz)
+
     # 最新收盤價：用「小範圍查詢」拿到的資料，比較不受大範圍歷史查詢的長效快取影響
-    recent_close = recent_df["Close"].dropna()
+    recent_close = recent_completed["Close"].dropna()
     if recent_close.empty:
-        raise ValueError(f"{ticker_name} 沒有有效的最新收盤價")
+        raise ValueError(f"{ticker_name} 沒有有效的『已收盤』最新價（可能還在盤中，或還沒有已完成的交易日資料）")
 
     last_date = recent_close.index[-1]
     if hasattr(last_date, "to_pydatetime"):
@@ -89,7 +111,7 @@ def compute_close_ma_dev(hist_df, recent_df, ticker_name, max_stale_days=4):
     close = float(recent_close.iloc[-1])
 
     # 交叉比對：大範圍歷史資料裡「相同日期」的收盤價，如果跟小範圍查詢差異過大，直接報錯
-    hist_close_series = hist_df["Close"].dropna()
+    hist_close_series = hist_completed["Close"].dropna()
     if not hist_close_series.empty:
         hist_last_date = hist_close_series.index[-1]
         hist_close = float(hist_close_series.iloc[-1])
@@ -99,8 +121,8 @@ def compute_close_ma_dev(hist_df, recent_df, ticker_name, max_stale_days=4):
                 f"歷史查詢收盤價 {hist_close:.2f}（{hist_last_date.date()}），差距過大，疑似快取問題"
             )
 
-    # 200MA 用大範圍歷史資料算，200 天前的資料稍舊不影響
-    ma_series = hist_df["Close"].rolling(200).mean().dropna()
+    # 200MA 用大範圍歷史資料算（已濾掉未收盤的今天），200 天前的資料稍舊不影響
+    ma_series = hist_completed["Close"].rolling(200).mean().dropna()
     if ma_series.empty:
         raise ValueError(f"{ticker_name} 資料不足以算 200MA（可能資料筆數 < 200）")
     ma200 = float(ma_series.iloc[-1])
@@ -109,7 +131,7 @@ def compute_close_ma_dev(hist_df, recent_df, ticker_name, max_stale_days=4):
         raise ValueError(f"{ticker_name} MA200 為 0，無法計算偏離率")
 
     dev = (close / ma200 - 1) * 100
-    return close, ma200, dev
+    return close, ma200, dev, last_date.date()
 
 
 # =========================
@@ -118,7 +140,7 @@ def compute_close_ma_dev(hist_df, recent_df, ticker_name, max_stale_days=4):
 def get_spy_data():
     hist_df = fetch_with_retry("SPY", period="2y")
     recent_df = fetch_with_retry("SPY", period="5d")
-    return compute_close_ma_dev(hist_df, recent_df, "SPY")
+    return compute_close_ma_dev(hist_df, recent_df, "SPY", market_tz="America/New_York")
 
 
 # =========================
@@ -127,7 +149,7 @@ def get_spy_data():
 def get_0050tw_data():
     hist_df = fetch_with_retry("0050.TW", period="2y")
     recent_df = fetch_with_retry("0050.TW", period="5d")
-    return compute_close_ma_dev(hist_df, recent_df, "0050.TW")
+    return compute_close_ma_dev(hist_df, recent_df, "0050.TW", market_tz="Asia/Taipei")
 
 
 # =========================
@@ -135,8 +157,8 @@ def get_0050tw_data():
 # =========================
 if __name__ == "__main__":
     try:
-        close, ma200, dev = get_spy_data()
-        spy_block = f"""📊 SPY 技術數據
+        close, ma200, dev, data_date = get_spy_data()
+        spy_block = f"""📊 SPY 技術數據（資料日期：{data_date}）
 收盤價：{close:.2f}
 200MA：{ma200:.2f}
 偏離率：{dev:.2f}%"""
@@ -145,8 +167,8 @@ if __name__ == "__main__":
         spy_block = f"📊 SPY 技術數據\n⚠️ 資料抓取失敗，已跳過（原因：{e}）"
 
     try:
-        close_0050, ma200_0050, dev_0050 = get_0050tw_data()
-        e0050_block = f"""📊 0050.TW 技術數據
+        close_0050, ma200_0050, dev_0050, data_date_0050 = get_0050tw_data()
+        e0050_block = f"""📊 0050.TW 技術數據（資料日期：{data_date_0050}）
 收盤價：{close_0050:.2f}
 200MA：{ma200_0050:.2f}
 偏離率：{dev_0050:.2f}%"""
