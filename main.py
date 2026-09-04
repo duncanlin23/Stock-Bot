@@ -45,7 +45,7 @@ def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=3, wait_sec
                 period=period,
                 interval=interval,
                 progress=False,
-                auto_adjust=True,   # 明確指定，避免新舊版 yfinance 預設值不同造成欄位差異
+                auto_adjust=False,  # 用原始收盤價，跟 Yahoo 網頁/一般查價網站數字一致（不做除權息還原）
             )
 
             # 有些 yfinance 版本在單一 ticker 時仍會回傳 MultiIndex columns，這裡統一攤平
