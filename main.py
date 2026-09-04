@@ -3,6 +3,11 @@ import pandas as pd
 import requests
 import os
 import time
+import sys
+
+# 如果有設定環境變數 YF_DEBUG=1，就開啟 yfinance debug log，方便排查429限流/cookie驗證等問題
+if os.environ.get("YF_DEBUG") == "1":
+    yf.enable_debug_mode()
 
 # =========================
 # LINE 推播 function
@@ -32,7 +37,25 @@ def send_line(msg):
 # =========================
 # 共用：帶重試機制的下載 + 驗證
 # =========================
-def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=3, wait_sec=5):
+def fetch_from_stooq(ticker):
+    """
+    備援資料源：Stooq，免 API key，Yahoo 失敗時的救援方案。
+    Stooq 的美股代碼直接用 ticker（如 SPY），台股需要用 .tw 後綴（Stooq 格式跟 Yahoo 不同）。
+    """
+    stooq_symbol = ticker.replace(".TW", ".TW") if ".TW" in ticker else ticker
+    url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    from io import StringIO
+    df = pd.read_csv(StringIO(resp.text))
+    if df.empty or "Close" not in df.columns:
+        raise ValueError(f"{ticker} 從 Stooq 抓取失敗或格式不對")
+    df["Date"] = pd.to_datetime(df["Date"])
+    df = df.set_index("Date")
+    return df
+
+
+def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=3, wait_sec=5, use_stooq_fallback=True):
     """
     下載資料，並驗證資料有效性（非空、Close 非全 NaN、最後一筆非 NaN）。
     抓不到有效資料時會重試，重試完仍失敗則 raise。
@@ -68,7 +91,15 @@ def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=3, wait_sec
             if attempt < max_retries:
                 time.sleep(wait_sec)
 
-    raise RuntimeError(f"{ticker} 重試 {max_retries} 次後仍失敗: {last_error}")
+    if use_stooq_fallback:
+        try:
+            print(f"[INFO] {ticker} Yahoo 重試 {max_retries} 次仍失敗，改用 Stooq 備援資料源")
+            return fetch_from_stooq(ticker)
+        except Exception as e:
+            print(f"[WARN] {ticker} Stooq 備援也失敗: {e}")
+            last_error = e
+
+    raise RuntimeError(f"{ticker} 重試 {max_retries} 次後仍失敗（含 Stooq 備援）: {last_error}")
 
 
 def keep_only_completed_days(df, market_tz):
@@ -89,7 +120,7 @@ def keep_only_completed_days(df, market_tz):
     return filtered
 
 
-def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_days=5):
+def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_days=2):
     # 先濾掉「今天」這筆盤中/未定案資料，確保拿到的是已收盤的最後交易日
     recent_completed = keep_only_completed_days(recent_df, market_tz)
     hist_completed = keep_only_completed_days(hist_df, market_tz)
@@ -140,7 +171,14 @@ def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_d
 def get_spy_data():
     hist_df = fetch_with_retry("SPY", period="2y")
     recent_df = fetch_with_retry("SPY", period="5d")
-    return compute_close_ma_dev(hist_df, recent_df, "SPY", market_tz="America/New_York")
+    try:
+        return compute_close_ma_dev(hist_df, recent_df, "SPY", market_tz="America/New_York")
+    except ValueError as e:
+        if "資料過舊" not in str(e):
+            raise
+        print(f"[INFO] SPY Yahoo 資料過舊，改用 Stooq 備援重新計算: {e}")
+        stooq_df = fetch_from_stooq("SPY")
+        return compute_close_ma_dev(stooq_df, stooq_df, "SPY", market_tz="America/New_York")
 
 
 # =========================
@@ -149,7 +187,14 @@ def get_spy_data():
 def get_0050tw_data():
     hist_df = fetch_with_retry("0050.TW", period="2y")
     recent_df = fetch_with_retry("0050.TW", period="5d")
-    return compute_close_ma_dev(hist_df, recent_df, "0050.TW", market_tz="Asia/Taipei")
+    try:
+        return compute_close_ma_dev(hist_df, recent_df, "0050.TW", market_tz="Asia/Taipei")
+    except ValueError as e:
+        if "資料過舊" not in str(e):
+            raise
+        print(f"[INFO] 0050.TW Yahoo 資料過舊，改用 Stooq 備援重新計算: {e}")
+        stooq_df = fetch_from_stooq("0050.TW")
+        return compute_close_ma_dev(stooq_df, stooq_df, "0050.TW", market_tz="Asia/Taipei")
 
 
 # =========================
