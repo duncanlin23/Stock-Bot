@@ -71,13 +71,13 @@ def fetch_with_retry(ticker, period="2y", interval="1d", max_retries=3, wait_sec
     raise RuntimeError(f"{ticker} 重試 {max_retries} 次後仍失敗: {last_error}")
 
 
-def compute_close_ma_dev(df, ticker_name, max_stale_days=4):
-    close_series = df["Close"].dropna()
-    if close_series.empty:
-        raise ValueError(f"{ticker_name} 沒有有效收盤價")
+def compute_close_ma_dev(hist_df, recent_df, ticker_name, max_stale_days=4):
+    # 最新收盤價：用「小範圍查詢」拿到的資料，比較不受大範圍歷史查詢的長效快取影響
+    recent_close = recent_df["Close"].dropna()
+    if recent_close.empty:
+        raise ValueError(f"{ticker_name} 沒有有效的最新收盤價")
 
-    # 檢查資料新鮮度：最後一筆日期跟「今天」差太多天，代表可能抓到舊快取/延遲資料
-    last_date = close_series.index[-1]
+    last_date = recent_close.index[-1]
     if hasattr(last_date, "to_pydatetime"):
         last_date = last_date.to_pydatetime()
     days_old = (pd.Timestamp.now(tz=last_date.tzinfo) - pd.Timestamp(last_date)).days
@@ -86,10 +86,21 @@ def compute_close_ma_dev(df, ticker_name, max_stale_days=4):
             f"{ticker_name} 資料過舊：最後一筆日期是 {last_date.date()}，"
             f"距今 {days_old} 天，疑似抓到舊快取資料"
         )
+    close = float(recent_close.iloc[-1])
 
-    close = float(close_series.iloc[-1])
+    # 交叉比對：大範圍歷史資料裡「相同日期」的收盤價，如果跟小範圍查詢差異過大，直接報錯
+    hist_close_series = hist_df["Close"].dropna()
+    if not hist_close_series.empty:
+        hist_last_date = hist_close_series.index[-1]
+        hist_close = float(hist_close_series.iloc[-1])
+        if abs(hist_close - close) / close > 0.02:  # 差超過 2% 視為異常
+            raise ValueError(
+                f"{ticker_name} 資料源不一致：近期查詢收盤價 {close:.2f}，"
+                f"歷史查詢收盤價 {hist_close:.2f}（{hist_last_date.date()}），差距過大，疑似快取問題"
+            )
 
-    ma_series = df["Close"].rolling(200).mean().dropna()
+    # 200MA 用大範圍歷史資料算，200 天前的資料稍舊不影響
+    ma_series = hist_df["Close"].rolling(200).mean().dropna()
     if ma_series.empty:
         raise ValueError(f"{ticker_name} 資料不足以算 200MA（可能資料筆數 < 200）")
     ma200 = float(ma_series.iloc[-1])
@@ -105,16 +116,18 @@ def compute_close_ma_dev(df, ticker_name, max_stale_days=4):
 # SPY 數據
 # =========================
 def get_spy_data():
-    df = fetch_with_retry("SPY")
-    return compute_close_ma_dev(df, "SPY")
+    hist_df = fetch_with_retry("SPY", period="2y")
+    recent_df = fetch_with_retry("SPY", period="5d")
+    return compute_close_ma_dev(hist_df, recent_df, "SPY")
 
 
 # =========================
 # 0050.tw 數據
 # =========================
 def get_0050tw_data():
-    df = fetch_with_retry("0050.TW")
-    return compute_close_ma_dev(df, "0050.TW")
+    hist_df = fetch_with_retry("0050.TW", period="2y")
+    recent_df = fetch_with_retry("0050.TW", period="5d")
+    return compute_close_ma_dev(hist_df, recent_df, "0050.TW")
 
 
 # =========================
