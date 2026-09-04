@@ -1,5 +1,6 @@
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import requests
 import os
 import time
@@ -120,7 +121,7 @@ def keep_only_completed_days(df, market_tz):
     return filtered
 
 
-def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_days=2):
+def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_days=1):
     # 先濾掉「今天」這筆盤中/未定案資料，確保拿到的是已收盤的最後交易日
     recent_completed = keep_only_completed_days(recent_df, market_tz)
     hist_completed = keep_only_completed_days(hist_df, market_tz)
@@ -133,11 +134,17 @@ def compute_close_ma_dev(hist_df, recent_df, ticker_name, market_tz, max_stale_d
     last_date = recent_close.index[-1]
     if hasattr(last_date, "to_pydatetime"):
         last_date = last_date.to_pydatetime()
-    days_old = (pd.Timestamp.now(tz=last_date.tzinfo) - pd.Timestamp(last_date)).days
-    if days_old > max_stale_days:
+
+    # 用「工作日天數」判斷新舊，避免週末造成誤判（例如週一抓到上週五資料，這其實是正常最新的）
+    today_naive = pd.Timestamp.now(tz=last_date.tzinfo).normalize()
+    last_date_naive = pd.Timestamp(last_date).normalize()
+    business_days_old = int(np.busday_count(
+        last_date_naive.date(), today_naive.date()
+    ))
+    if business_days_old > max_stale_days:
         raise ValueError(
             f"{ticker_name} 資料過舊：最後一筆日期是 {last_date.date()}，"
-            f"距今 {days_old} 天，疑似抓到舊快取資料"
+            f"距今 {business_days_old} 個交易日，疑似抓到舊快取資料"
         )
     close = float(recent_close.iloc[-1])
 
