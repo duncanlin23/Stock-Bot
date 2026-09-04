@@ -23,3 +23,4 @@ jobs:
         env:
           LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
           USER_ID1: ${{ secrets.USER_ID1 }}
+          YF_DEBUG: "1"
